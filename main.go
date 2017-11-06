@@ -18,14 +18,14 @@ import (
 func initViper() {
     usr, err := user.Current()
     if (err != nil) {
-        log.Fatal(err)
+        log.Fatalf("cannot get current user: %s", err)
     }
 
     viper.AddConfigPath(".")
     viper.SetConfigName(usr.Username)
     err = viper.ReadInConfig()
     if (err != nil) {
-        log.Info(err)
+        log.Infof("cannot read config: %s", err)
     }
 
     viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
@@ -45,7 +45,7 @@ func createSqsService() (*sqs.SQS) {
     awsRegion := viper.GetString("aws.region")
     awsAccessKey := viper.GetString("aws.access_key")
     awsSecretKey := viper.GetString("aws.secret_key")
-    log.Info(awsRegion)
+
     sess := session.Must(session.NewSession(&aws.Config{
         Region: &awsRegion,
         Credentials: credentials.NewStaticCredentials(awsAccessKey, awsSecretKey, ""),
@@ -55,42 +55,61 @@ func createSqsService() (*sqs.SQS) {
     return sqsService
 }
 
+
+func deleteMessage(sqsService *sqs.SQS, queueUrl string, messageId *string, receiptHandle *string) {
+    _, err := sqsService.DeleteMessage(&sqs.DeleteMessageInput{
+        QueueUrl:      &queueUrl,
+        ReceiptHandle: receiptHandle,
+    })
+
+    if err != nil {
+        log.Infof("delete error for %s: %s", *messageId, err)
+    } else {
+        log.Infof("message deleted: %s", *messageId)
+    }
+}
+
+func receiveMessages(sqsService *sqs.SQS, queueUrl string, messages chan string) {
+
+    for {
+        log.Info("waiting for message...")
+        result, err := sqsService.ReceiveMessage(&sqs.ReceiveMessageInput{
+            AttributeNames: []*string{
+                aws.String(sqs.MessageSystemAttributeNameSentTimestamp),
+            },
+            MessageAttributeNames: []*string{
+                aws.String(sqs.QueueAttributeNameAll),
+            },
+            QueueUrl:            &queueUrl,
+            MaxNumberOfMessages: aws.Int64(10),
+            VisibilityTimeout:   aws.Int64(60),
+            WaitTimeSeconds:     aws.Int64(viper.GetInt64("aws.sqs_wait_time")),
+        })
+
+        if err != nil {
+            log.Warnf("failure in ReceiveMessage: %s", err)
+            continue
+        }
+
+        log.Infof("received %d messages", len(result.Messages))
+        for _, message := range result.Messages {
+            messages <- *message.Body
+
+            deleteMessage(sqsService, queueUrl, message.MessageId, message.ReceiptHandle)
+        }
+    }
+}
+
 func main() {
 
     sqsService := createSqsService()
     queueUrl := viper.GetString("aws.queue_url")
+    messages := make(chan string)
 
-    log.Println("Waiting...")
-    result, err := sqsService.ReceiveMessage(&sqs.ReceiveMessageInput{
-        AttributeNames: []*string{
-            aws.String(sqs.MessageSystemAttributeNameSentTimestamp),
-        },
-        MessageAttributeNames: []*string{
-            aws.String(sqs.QueueAttributeNameAll),
-        },
-        QueueUrl:            &queueUrl,
-        MaxNumberOfMessages: aws.Int64(1),
-        VisibilityTimeout:   aws.Int64(3600),
-        WaitTimeSeconds:     aws.Int64(viper.GetInt64("aws.sqs_wait_time")),
-    })
 
-    if err != nil {
-        log.Warn("Error", err)
-    }
+    go receiveMessages(sqsService, queueUrl, messages)
 
-    log.Infof("Received %d messages", len(result.Messages))
-
-    if len(result.Messages) != 0 {
-        resultDelete, err := sqsService.DeleteMessage(&sqs.DeleteMessageInput{
-            QueueUrl:      &queueUrl,
-            ReceiptHandle: result.Messages[0].ReceiptHandle,
-        })
-
-        if err != nil {
-            log.Info("Delete Error", err)
-            return
-        }
-
-        log.Info("Message Deleted", resultDelete)
+    for message := range messages {
+        log.Infof("message received: %s", message)
     }
 }
