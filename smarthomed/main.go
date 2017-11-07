@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"os/exec"
 	"os/user"
 	"strings"
 	"time"
@@ -107,5 +109,15 @@ func main() {
 
 	for message := range messages {
 		log.Infof("message received: %s", message)
+
+		samsung_ip := viper.GetString("samsung_ip")
+		cmd := exec.Command("samsungctl", "--host", samsung_ip)
+		log.Infof("%v", cmd)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		err := cmd.Run()
+		if err != nil {
+			log.Warnf("samsungctl finished with error: %v", err)
+		}
 	}
 }
